@@ -1,6 +1,10 @@
 FROM golang:1.22-bookworm AS bridge-builder
 
 WORKDIR /src/whatsapp-bridge
+RUN apt-get update && apt-get install -y \
+    git \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY whatsapp-bridge/go.mod whatsapp-bridge/go.sum ./
 RUN go mod download
 COPY whatsapp-bridge/ ./
