@@ -14,18 +14,16 @@ echo "Starting WhatsApp bridge on port ${BRIDGE_PORT}..."
 /app/whatsapp-bridge/whatsapp-bridge &
 bridge_pid=$!
 
-echo "Waiting for bridge health..."
-for i in $(seq 1 30); do
-  if curl -sf "http://localhost:${BRIDGE_PORT}/health" >/dev/null; then
+echo "Waiting briefly for bridge health..."
+for i in $(seq 1 10); do
+  if curl -sf --max-time 2 "http://localhost:${BRIDGE_PORT}/health" >/dev/null; then
     break
   fi
   sleep 1
 done
 
-if ! curl -sf "http://localhost:${BRIDGE_PORT}/health" >/dev/null; then
-  echo "Bridge failed to start; exiting."
-  kill "$bridge_pid" >/dev/null 2>&1 || true
-  exit 1
+if ! curl -sf --max-time 2 "http://localhost:${BRIDGE_PORT}/health" >/dev/null; then
+  echo "Bridge health not ready yet; continuing to start API."
 fi
 
 cd /app/whatsapp-mcp-server
