@@ -25,7 +25,7 @@ COPY . .
 
 # Install Python dependencies
 WORKDIR /app/whatsapp-mcp-server
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy bridge binary
 COPY --from=bridge-builder /out/whatsapp-bridge /app/whatsapp-bridge/whatsapp-bridge
