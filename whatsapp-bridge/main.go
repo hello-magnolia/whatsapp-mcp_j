@@ -1046,8 +1046,12 @@ func main() {
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 
 				// Configuration - Post QR to FastAPI backend
+				apiPort := os.Getenv("PORT")
+				if apiPort == "" {
+					apiPort = "8000"
+				}
 				config := Config{
-					ServerURL:      "http://localhost:8000/api/qr",
+					ServerURL:      fmt.Sprintf("http://localhost:%s/api/qr", apiPort),
 					PostInterval:   5 * time.Second, // Post every 5 seconds
 					RetryAttempts:  3,
 					RetryDelay:     2 * time.Second,
