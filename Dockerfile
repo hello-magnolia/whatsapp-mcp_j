@@ -1,6 +1,7 @@
 FROM golang:1.24-bookworm AS bridge-builder
 
 WORKDIR /src/whatsapp-bridge
+ARG CACHEBUST=1
 RUN apt-get update && apt-get install -y \
     git \
     ca-certificates \
