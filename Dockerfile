@@ -1,4 +1,4 @@
-FROM golang:1.22-bookworm AS bridge-builder
+FROM golang:1.23-bookworm AS bridge-builder
 
 WORKDIR /src/whatsapp-bridge
 RUN apt-get update && apt-get install -y \
