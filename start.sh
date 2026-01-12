@@ -30,4 +30,6 @@ fi
 
 cd /app/whatsapp-mcp-server
 echo "Starting API on port ${PORT}..."
-exec uvicorn api:app --host 0.0.0.0 --port "${PORT}"
+python -c "import sys; print('Python:', sys.version)" || true
+python -c "import uvicorn; print('Uvicorn:', uvicorn.__version__)" || true
+exec python -m uvicorn api:app --host 0.0.0.0 --port "${PORT}" --log-level info
