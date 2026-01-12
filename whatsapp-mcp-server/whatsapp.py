@@ -3,12 +3,20 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 import os.path
+import os
 import requests
 import json
 import audio
 
-MESSAGES_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'whatsapp-bridge', 'store', 'messages.db')
-WHATSAPP_API_BASE_URL = "http://localhost:8080/api"
+DEFAULT_MESSAGES_DB_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    '..',
+    'whatsapp-bridge',
+    'store',
+    'messages.db',
+)
+MESSAGES_DB_PATH = os.getenv("MESSAGES_DB_PATH", DEFAULT_MESSAGES_DB_PATH)
+WHATSAPP_API_BASE_URL = os.getenv("WHATSAPP_API_BASE_URL", "http://localhost:8080/api")
 
 @dataclass
 class Message:
@@ -131,9 +139,31 @@ def list_messages(
     page: int = 0,
     include_context: bool = True,
     context_before: int = 1,
-    context_after: int = 1
+    context_after: int = 1,
+    media_type: Optional[str] = None,
+    is_from_me: Optional[bool] = None,
+    chat_name_pattern: Optional[str] = None,
+    return_raw: bool = False
 ) -> List[Message]:
-    """Get messages matching the specified criteria with optional context."""
+    """
+    Get messages matching the specified criteria with optional context.
+    
+    Args:
+        after: ISO-8601 datetime string - messages after this time
+        before: ISO-8601 datetime string - messages before this time
+        sender_phone_number: Filter by sender phone number
+        chat_jid: Filter by chat JID
+        query: Search query in message content
+        limit: Maximum messages to return
+        page: Page number for pagination
+        include_context: Whether to include context messages
+        context_before: Number of context messages before main message
+        context_after: Number of context messages after main message
+        media_type: Filter by media type (e.g., 'image', 'video', 'audio', 'document')
+        is_from_me: Filter by direction (True = sent by user, False = received)
+        chat_name_pattern: Fuzzy match chat name
+        return_raw: If True, return raw Message objects instead of formatted strings (for API use)
+    """
     try:
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
@@ -174,6 +204,19 @@ def list_messages(
         if query:
             where_clauses.append("LOWER(messages.content) LIKE LOWER(?)")
             params.append(f"%{query}%")
+        
+        # New filters
+        if media_type:
+            where_clauses.append("messages.media_type = ?")
+            params.append(media_type)
+        
+        if is_from_me is not None:
+            where_clauses.append("messages.is_from_me = ?")
+            params.append(1 if is_from_me else 0)
+        
+        if chat_name_pattern:
+            where_clauses.append("LOWER(chats.name) LIKE LOWER(?)")
+            params.append(f"%{chat_name_pattern}%")
             
         if where_clauses:
             query_parts.append("WHERE " + " AND ".join(where_clauses))
@@ -200,23 +243,39 @@ def list_messages(
                 media_type=msg[7]
             )
             result.append(message)
+        
+        # If return_raw is True, return raw Message objects (for API analysis)
+        if return_raw:
+            return result
             
         if include_context and result:
             # Add context for each message
             messages_with_context = []
             for msg in result:
-                context = get_message_context(msg.id, context_before, context_after)
-                messages_with_context.extend(context.before)
-                messages_with_context.append(context.message)
-                messages_with_context.extend(context.after)
+                try:
+                    context = get_message_context(msg.id, context_before, context_after)
+                    messages_with_context.extend(context.before)
+                    messages_with_context.append(context.message)
+                    messages_with_context.extend(context.after)
+                except Exception as e:
+                    # If context retrieval fails, just add the message without context
+                    print(f"Warning: Failed to get context for message {msg.id}: {e}")
+                    messages_with_context.append(msg)
             
-            return format_messages_list(messages_with_context, show_chat_info=True)
+            return messages_with_context
             
-        # Format and display messages without context
-        return format_messages_list(result, show_chat_info=True)    
+        # Return raw Message objects (without context) for API use
+        return result    
         
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        print(f"Database error in list_messages: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+    except Exception as e:
+        print(f"Unexpected error in list_messages: {e}")
+        import traceback
+        traceback.print_exc()
         return []
     finally:
         if 'conn' in locals():
