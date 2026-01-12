@@ -2,7 +2,13 @@
 set -euo pipefail
 
 : "${PORT:=8000}"
-: "${BRIDGE_PORT:=8080}"
+if [ -z "${BRIDGE_PORT:-}" ]; then
+  if [ "${PORT}" = "8080" ]; then
+    BRIDGE_PORT=8081
+  else
+    BRIDGE_PORT=8080
+  fi
+fi
 : "${BRIDGE_STORE_DIR:=/app/whatsapp-bridge/store}"
 
 mkdir -p "$BRIDGE_STORE_DIR" /tmp/whatsapp-api-uploads
