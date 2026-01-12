@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -30,6 +32,175 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
+
+// QRRequest represents the JSON payload for the QR code
+type QRRequest struct {
+	QR string `json:"qr"`
+}
+
+// QRResponse represents the server's response
+type QRResponse struct {
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+// Config holds the application configuration
+type Config struct {
+	ServerURL      string
+	PostInterval   time.Duration
+	RetryAttempts  int
+	RetryDelay     time.Duration
+	TimeoutSeconds int
+}
+
+// QRPoster handles periodic QR code posting
+type QRPoster struct {
+	config     Config
+	httpClient *http.Client
+	qrChannel  chan string
+}
+
+// NewQRPoster creates a new QR poster instance
+func NewQRPoster(config Config) *QRPoster {
+	return &QRPoster{
+		config: config,
+		httpClient: &http.Client{
+			Timeout: time.Duration(config.TimeoutSeconds) * time.Second,
+		},
+		qrChannel: make(chan string, 10),
+	}
+}
+
+// PostQRCode sends a QR code string to the server
+func (qp *QRPoster) PostQRCode(qrString string) error {
+	// Create request payload
+	payload := QRRequest{QR: qrString}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequest("POST", qp.config.ServerURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	// Send request with retry logic
+	var lastErr error
+	for attempt := 0; attempt <= qp.config.RetryAttempts; attempt++ {
+		if attempt > 0 {
+			log.Printf("Retry attempt %d/%d after %v", attempt, qp.config.RetryAttempts, qp.config.RetryDelay)
+			time.Sleep(qp.config.RetryDelay)
+		}
+
+		resp, err := qp.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			log.Printf("Request failed: %v", err)
+			continue
+		}
+
+		// Read response body
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if err != nil {
+			lastErr = err
+			log.Printf("Failed to read response: %v", err)
+			continue
+		}
+
+		// Check status code
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(body))
+			log.Printf("Request failed: %v", lastErr)
+			continue
+		}
+
+		// Parse response
+		var qrResp QRResponse
+		if err := json.Unmarshal(body, &qrResp); err != nil {
+			log.Printf("Warning: Failed to parse response: %v", err)
+		} else if qrResp.Success {
+			log.Printf("✓ QR code posted successfully: %s", qrResp.Message)
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("failed after %d attempts: %w", qp.config.RetryAttempts+1, lastErr)
+}
+
+// StartPeriodicPosting starts posting QR codes periodically
+func (qp *QRPoster) StartPeriodicPosting(getQRString string) {
+	ticker := time.NewTicker(qp.config.PostInterval)
+	defer ticker.Stop()
+
+	log.Printf("Started periodic QR code posting every %v", qp.config.PostInterval)
+	log.Printf("Posting to: %s", qp.config.ServerURL)
+	log.Printf("posting QR code string: %s", getQRString)
+	// Post immediately on start
+	qrString := getQRString
+	if qrString != "" {
+		if err := qp.PostQRCode(qrString); err != nil {
+			log.Printf("Error posting QR code: %v", err)
+		}
+	}
+
+	// Continue posting periodically
+	for range ticker.C {
+		qrString := getQRString
+		if qrString == "" {
+			log.Println("No QR code string available, skipping...")
+			continue
+		}
+
+		if err := qp.PostQRCode(qrString); err != nil {
+			log.Printf("Error posting QR code: %v", err)
+		}
+	}
+}
+
+// PostQRAsync sends QR code string through a channel for async processing
+func (qp *QRPoster) PostQRAsync(qrString string) {
+	select {
+	case qp.qrChannel <- qrString:
+		log.Println("QR code queued for posting")
+	default:
+		log.Println("Warning: QR code channel is full, dropping request")
+	}
+}
+
+// StartAsyncWorker starts a worker that processes QR codes from the channel
+func (qp *QRPoster) StartAsyncWorker() {
+	go func() {
+		log.Println("Started async QR code worker")
+		for qrString := range qp.qrChannel {
+			if err := qp.PostQRCode(qrString); err != nil {
+				log.Printf("Error posting QR code: %v", err)
+			}
+		}
+	}()
+}
+
+// Example QR string generator (replace with actual WhatsApp QR generation)
+func generateQRString() string {
+	// In real implementation, this would come from your WhatsApp bridge
+	return fmt.Sprintf("QR_CODE_%d", time.Now().Unix())
+}
+
+// Example: Simulated WhatsApp QR callback
+func simulateWhatsAppQR(poster *QRPoster) {
+	// Simulate receiving a QR code after 2 seconds
+	time.Sleep(2 * time.Second)
+	qrString := "2@ABC123XYZ456..." // This would be your actual WhatsApp QR string
+	log.Println("Received new QR code from WhatsApp")
+	poster.PostQRAsync(qrString)
+}
 
 // Message represents a chat message for our client
 type Message struct {
@@ -641,7 +812,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Download the media using whatsmeow client
-	mediaData, err := client.Download(downloader)
+	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -800,14 +971,14 @@ func main() {
 		return
 	}
 
-	container, err := sqlstore.New("sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		return
 	}
 
 	// Get device store - This contains session information
-	deviceStore, err := container.GetFirstDevice()
+	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// No device exists, create one
@@ -870,7 +1041,28 @@ func main() {
 		for evt := range qrChan {
 			if evt.Event == "code" {
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
+				fmt.Println("\nHey here is the raw code: " + evt.Code)
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+
+				// Configuration - Post QR to FastAPI backend
+				config := Config{
+					ServerURL:      "http://localhost:8000/api/qr",
+					PostInterval:   5 * time.Second, // Post every 5 seconds
+					RetryAttempts:  3,
+					RetryDelay:     2 * time.Second,
+					TimeoutSeconds: 10,
+				}
+
+				// Create QR poster
+				poster := NewQRPoster(config)
+
+				// Start async worker (optional, for event-driven posting)
+				poster.StartAsyncWorker()
+
+				// Example 1: Periodic posting
+				go func() {
+					poster.StartPeriodicPosting(evt.Code)
+				}()
 			} else if evt.Event == "success" {
 				connected <- true
 				break
@@ -973,7 +1165,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 
 		// If we didn't get a name, try group info
 		if name == "" {
-			groupInfo, err := client.GetGroupInfo(jid)
+			groupInfo, err := client.GetGroupInfo(context.Background(), jid)
 			if err == nil && groupInfo.Name != "" {
 				name = groupInfo.Name
 			} else {
@@ -988,7 +1180,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 		logger.Infof("Getting name for contact: %s", chatJID)
 
 		// Just use contact info (full name)
-		contact, err := client.Store.Contacts.GetContact(jid)
+		contact, err := client.Store.Contacts.GetContact(context.Background(), jid)
 		if err == nil && contact.FullName != "" {
 			name = contact.FullName
 		} else if sender != "" {
